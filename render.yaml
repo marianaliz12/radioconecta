@@ -1,0 +1,31 @@
+# Blueprint de Render: crea el servicio web desde este repositorio.
+services:
+  - type: web
+    name: radioconecta-tic
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD
+        generateValue: true          # Render la genera; la ves en Environment
+      - key: SOLICITANTE_USER
+        value: solicitante
+      - key: SOLICITANTE_PASSWORD
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false                  # la escribes tú en el panel de Render
+    # Para que los datos sobrevivan reinicios y despliegues necesitas un plan de pago con disco:
+    #   plan: starter
+    #   disk:
+    #     name: datos
+    #     mountPath: /var/data
+    #     sizeGB: 1
+    #   y agrega la variable: DATA_DIR=/var/data
