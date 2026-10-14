@@ -4,7 +4,15 @@
   "description": "RadioConecta TIC: propuesta de aplicación para el acompañamiento de radios comunitarias (prototipo)",
   "main": "server.js",
   "private": true,
-  "engines": { "node": ">=18" },
-  "scripts": { "start": "node server.js", "test": "node test/server.test.js" },
-  "dependencies": { "express": "^4.19.2" }
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/server.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.8",
+    "express": "^4.19.2"
+  }
 }

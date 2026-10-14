@@ -6,6 +6,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { SYSTEM_PROMPT } = require('./lib/prompt');
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 
 const PROD = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 3000;
@@ -242,7 +245,7 @@ app.post('/api/chat', needAuth, async (req, res) => {
     }));
 
     const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
       {
         method: 'POST',
         headers: {
