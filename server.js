@@ -199,28 +199,96 @@ app.delete('/api/admin/users/:u', needAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- asistente (proxy a Anthropic; requiere sesión) ----------
+
+ // ---------- asistente educativo con Google Gemini ----------
 const chatHits = new Map();
+
 app.post('/api/chat', needAuth, async (req, res) => {
-  const now = Date.now(), hits = (chatHits.get(req.session.user) || []).filter(t => now - t < 3600000);
-  if (hits.length >= 60) return res.status(429).json({ error: 'Límite de 60 mensajes por hora alcanzado.' });
-  hits.push(now); chatHits.set(req.session.user, hits);
   try {
     const messages = (req.body || {}).messages;
-    if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'Falta el historial de mensajes' });
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'El servidor no tiene configurada la API key (ANTHROPIC_API_KEY).' });
-    const trimmed = messages.slice(-20).map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '').slice(0, 4000) }));
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5', max_tokens: 1000, system: SYSTEM_PROMPT, messages: trimmed })
+
+    if (!Array.isArray(messages) || !messages.length) {
+      return res.status(400).json({
+        error: 'Falta el historial de mensajes.'
+      });
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      return res.status(500).json({
+        error: 'Falta configurar GEMINI_API_KEY en Render.'
+      });
+    }
+
+    const now = Date.now();
+    const hits = (chatHits.get(req.session.user) || [])
+      .filter(t => now - t < 3600000);
+
+    if (hits.length >= 60) {
+      return res.status(429).json({
+        error: 'Límite de 60 mensajes por hora alcanzado.'
+      });
+    }
+
+    hits.push(now);
+    chatHits.set(req.session.user, hits);
+
+    const trimmed = messages.slice(-20).map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{
+        text: String(m.content || '').slice(0, 4000)
+      }]
+    }));
+
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: SYSTEM_PROMPT }]
+          },
+          contents: trimmed,
+          generationConfig: {
+            maxOutputTokens: 1500,
+            temperature: 0.4
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      console.error('Gemini:', response.status, await response.text());
+
+      return res.status(502).json({
+        error: 'No se pudo obtener respuesta de Gemini. Revisa los registros del servidor.'
+      });
+    }
+
+    const data = await response.json();
+
+    const reply = (data.candidates || [])
+      .flatMap(c => (c.content && c.content.parts) || [])
+      .map(p => p.text || '')
+      .join('\n')
+      .trim();
+
+    res.json({
+      reply: reply || 'No obtuve una respuesta. Intenta reformular tu pregunta.'
     });
-    if (!r.ok) { console.error('Anthropic', r.status, await r.text()); return res.status(502).json({ error: 'Error consultando el modelo de IA.' }); }
-    const data = await r.json();
-    const reply = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
-    res.json({ reply: reply || 'No obtuve una respuesta clara. Intenta reformular tu pregunta.' });
-  } catch (e) { console.error('chat', e); res.status(500).json({ error: 'Error interno del servidor.' }); }
+
+  } catch (error) {
+    console.error('Error en Gemini:', error);
+
+    res.status(500).json({
+      error: 'Error interno del asistente.'
+    });
+  }
 });
 
 app.get('/healthz', (req, res) => res.type('text').send('ok'));
