@@ -1190,8 +1190,22 @@
 
         <div>
           <h2 style="margin-top:0;">Emisoras en el mapa</h2>
-          <div class="station-list" id="station-list"></div>
-          <h2>Ficha del municipio</h2>
+
+<div style="margin: 15px 0;">
+  <button
+    type="button"
+    id="btn-locate-stations"
+    onclick="locateStationsAutomatically()"
+    style="background:#0A3BB5;color:white;padding:12px 18px;border:0;border-radius:8px;cursor:pointer;"
+  >
+    📍 Buscar ubicaciones automáticamente
+  </button>
+
+  <p id="location-search-status" style="margin-top:10px;"></p>
+</div>
+
+
+<div class="station-list" id="station-list"></div>          <h2>Ficha del municipio</h2>
           <div class="result-panel" style="position:static;" id="giron-ficha"></div>
           <div class="note">Para el listado oficial y completo, consulta el <a href="https://www.mintic.gov.co/portal/maparadio/" target="_blank" rel="noopener">mapa de radio de MinTIC</a> y el Plan Técnico Nacional de la <a href="https://www.ane.gov.co" target="_blank" rel="noopener">ANE</a>. Solo se muestran emisoras con datos cargados en esta aplicación.</div>
         </div>
@@ -1573,7 +1587,7 @@ const NIJEPRA_SITE = { lat: 7.068899, lng: -73.169562 };
 const GIRON_INFO = { dane: '68307', depto: 'Santander', areaKm2: 493.0, erigido: '1631', fuente: 'DANE, Marco Geoestadístico Nacional 2018' };
 const STATIONS_SEED = [{
   id: 'sjg-882', name: 'San Juan de Girón 88.2 FM', category: 'comunitaria', freq: '88.2', lat: 7.067804, lng: -73.169888,
-  power: 250, height: 30, verified: true,
+  power: 250, height: 30, verified: false,
   source: 'Registro público de la emisora; ubicación: Casa Cural junto a la Basílica de Girón',
   note: 'Comunitaria. Potencia y altura estimadas para su categoría (no publicadas oficialmente).'
 }];
@@ -1612,6 +1626,83 @@ async function loadStations(){
     }
   }catch(e){ console.warn('No se pudieron cargar las emisoras', e); }
   if(mapInitialized){ renderStationMarkers(); renderStationList(); updateProposedCoverage(); }
+}
+
+// Guardar las ubicaciones candidatas en el navegador
+function saveCandidateLocations(candidates) {
+  localStorage.setItem(
+    'rc_candidate_locations',
+    JSON.stringify(candidates)
+  );
+}
+
+// Recuperar las ubicaciones guardadas
+function loadCandidateLocations() {
+  try {
+    const saved = localStorage.getItem('rc_candidate_locations');
+
+    if (!saved) return;
+
+    const candidates = JSON.parse(saved);
+
+    if (Array.isArray(candidates)) {
+      showCandidateStations(candidates);
+    }
+  } catch (error) {
+    console.error('Error cargando ubicaciones:', error);
+  }
+}
+// ---------- Búsqueda automática de emisoras ----------
+async function locateStationsAutomatically() {
+  const button = document.getElementById('btn-locate-stations');
+  const status = document.getElementById('location-search-status');
+
+  if (!button || !status) return;
+
+  button.disabled = true;
+  status.textContent = 'Buscando ubicaciones de las emisoras...';
+
+  try {
+    const response = await fetch('/api/stations/locate', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Error al buscar ubicaciones.');
+    }
+
+    const results = data.results || [];
+    const candidates = results.filter(r => r.status === 'candidata');
+    const pending = results.filter(r => r.status === 'sin_coincidencia');
+    const errors = results.filter(r => r.status === 'error');
+
+    status.textContent =
+      `Ubicaciones encontradas: ${candidates.length}. ` +
+      `Sin coincidencia: ${pending.length}. ` +
+      `Errores: ${errors.length}.`;
+
+    console.table(candidates);
+console.table(errors);
+saveCandidateLocations(candidates);
+showCandidateStations(candidates);
+renderStationList();
+
+if (candidates.length > 0) {
+  status.textContent +=
+    ' Las ubicaciones candidatas aparecen en azul en el mapa.';
+}
+
+  } catch (error) {
+    status.textContent = 'Error: ' + error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 async function saveStations(){
   const st = byId('st-save-status');
@@ -1663,8 +1754,44 @@ function initCoverageMap(){
     return;
   }
   mapInitialized = true;
-  leafletMap = L.map('coverage-map', { zoomControl: true }).setView([7.0685, -73.17], 11);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; Colaboradores de OpenStreetMap' }).addTo(leafletMap);
+leafletMap = L.map('coverage-map', { zoomControl: true }).setView([7.0685, -73.17], 11);
+// Leyenda del mapa de emisoras de Girón
+const leyenda = L.control({ position: 'bottomright' });
+
+leyenda.onAdd = function () {
+  const div = L.DomUtil.create('div', 'leyenda-radio');
+
+  div.style.cssText = `
+    background: white;
+    padding: 12px 16px;
+    border-radius: 10px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+    font-size: 13px;
+    line-height: 26px;
+    color: #222;
+  `;
+
+  div.innerHTML = `
+  <strong>Emisoras y cobertura</strong>
+  <div>🟢 Comunitaria</div>
+  <div>🟠 Comercial</div>
+  <div>🟣 Interés público</div>
+  <div>🔵 Sitio propuesto (NIJEPRA)</div>
+  <div>🔷 Ubicación candidata (sin verificar)</div>
+  <div>🟡 Límite aproximado de Girón</div>
+`;
+
+  return div;
+};
+
+leyenda.addTo(leafletMap);
+L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  {
+    maxZoom: 19,
+    attribution: 'Tiles &copy; Esri'
+  }
+).addTo(leafletMap);
 
   const ring = gironRing();
   if(ring){
@@ -1699,16 +1826,134 @@ function stationPopup(st){
     (km !== null ? '<br>Radio de servicio estimado: ' + km.toFixed(1) + ' km (potencia ' + (st.power || '—') + ' W, torre ' + (st.height || '—') + ' m)' : '') +
     (st.source ? '<br><small>Fuente: ' + esc6(st.source) + '</small>' : '') + (st.note ? '<br><small>' + esc6(st.note) + '</small>' : '');
 }
-function renderStationMarkers(){
-  if(!mapInitialized) return;
-  stationMarkers.forEach(m => leafletMap.removeLayer(m)); stationCircles.forEach(c => leafletMap.removeLayer(c));
-  stationMarkers = []; stationCircles = [];
+
+  let candidateStationMarkers = [];
+
+function showCandidateStations(candidates) {
+  if (!mapInitialized || !leafletMap) return;
+
+  // Eliminar marcadores candidatos anteriores
+  candidateStationMarkers.forEach(marker => {
+    leafletMap.removeLayer(marker);
+  });
+
+  candidateStationMarkers = [];
+
+  candidates.forEach(st => {
+    if (!Number.isFinite(Number(st.lat)) ||
+        !Number.isFinite(Number(st.lng))) return;
+
+    const popup = document.createElement('div');
+
+    const title = document.createElement('strong');
+    title.textContent = st.name || 'Emisora';
+    popup.appendChild(title);
+
+    [
+      'Ubicación candidata, sin verificar',
+      'No corresponde necesariamente a la antena',
+      `Dirección: ${st.locationLabel || 'No disponible'}`,
+      `Fuente: ${st.locationSource || 'Geoapify'}`
+    ].forEach(line => {
+      const div = document.createElement('div');
+      div.textContent = line;
+      popup.appendChild(div);
+    });
+
+    const marker = L.circleMarker(
+      [Number(st.lat), Number(st.lng)],
+      {
+        radius: 10,
+        color: '#ffffff',
+        weight: 3,
+        fillColor: '#1685E8',
+        fillOpacity: 0.95
+      }
+    ).addTo(leafletMap);
+
+    marker.bindPopup(popup);
+    candidateStationMarkers.push(marker);
+  });
+}
+
+function renderStationMarkers() {
+  if (!mapInitialized) return;
+  loadCandidateLocations();
+
+  stationMarkers.forEach(m => leafletMap.removeLayer(m));
+  stationCircles.forEach(c => leafletMap.removeLayer(c));
+
+  stationMarkers = [];
+  stationCircles = [];
+
   const showCov = !byId('lay-cov') || byId('lay-cov').checked;
+
   mapStations.forEach(st => {
-    if(!hasLoc(st)) return;
+    if (!hasLoc(st)) return;
+
     const color = colorFor(st.category);
-    stationMarkers.push(L.circleMarker([st.lat, st.lng], { radius: 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 }).addTo(leafletMap).bindPopup(stationPopup(st)));
-    if(showCov) stationCircles.push(L.circle([st.lat, st.lng], { radius: stationRadiusKm(st) * 1000, color: color, fillColor: color, fillOpacity: 0.07, weight: 1.5, dashArray: '4 4' }).addTo(leafletMap));
+
+    // Distancia en kilómetros desde NIJEPRA
+    const distancia = (
+      leafletMap.distance(
+        [proposedStation.lat, proposedStation.lng],
+        [st.lat, st.lng]
+      ) / 1000
+    ).toFixed(2);
+
+    const nombre = String(st.name || 'Emisora sin nombre');
+    const frecuencia = String(st.freq || 'No registrada');
+    const categoria = CAT_LABEL[st.category] || 'Sin clasificar';
+
+    // Crear información de la emisora
+    const popup = document.createElement('div');
+
+    const titulo = document.createElement('strong');
+    titulo.textContent = nombre;
+    popup.appendChild(titulo);
+
+    [
+      `Frecuencia: ${frecuencia} MHz`,
+      `Categoría: ${categoria}`,
+      `Distancia a NIJEPRA: ${distancia} km`,
+      `Ubicación: ${st.verified ? 'Registrada como verificada' : 'No verificada'}`
+    ].forEach(linea => {
+      const div = document.createElement('div');
+      div.textContent = linea;
+      popup.appendChild(div);
+    });
+
+    // Marcador de la emisora
+    const marcador = L.circleMarker(
+      [st.lat, st.lng],
+      {
+        radius: 9,
+        color: '#ffffff',
+        weight: 3,
+        fillColor: color,
+        fillOpacity: 1
+      }
+    ).addTo(leafletMap);
+
+    marcador.bindPopup(popup);
+    stationMarkers.push(marcador);
+
+    // Cobertura teórica
+    if (showCov) {
+      const circulo = L.circle(
+        [st.lat, st.lng],
+        {
+          radius: stationRadiusKm(st) * 1000,
+          color: color,
+          fillColor: color,
+          fillOpacity: 0.07,
+          weight: 1.5,
+          dashArray: '4 4'
+        }
+      ).addTo(leafletMap);
+
+      stationCircles.push(circulo);
+    }
   });
 }
 function toggleLayers(){
@@ -1771,20 +2016,82 @@ function renderGironInfo(rangeKmIn){
 }
 
 // ---------- Lista de emisoras ----------
-function renderStationList(){
-  const wrap = byId('station-list'); if(!wrap) return;
+// ---------- Lista de emisoras ----------
+function renderStationList() {
+  const wrap = byId('station-list');
+  if (!wrap) return;
+
   const edit = canEditStations();
-  let h = '<div class="station-row"><span class="swatch" style="background:#0A3BB5;"></span><div class="body"><div class="name">Sitio propuesto (NIJEPRA)</div>' +
-    '<div class="meta">Propuesta · sin frecuencia asignada · ' + proposedStation.power + ' W, ' + proposedStation.gain + ' dBi, torre de ' + proposedStation.height + ' m</div></div></div>';
+
+  let candidates = [];
+
+  try {
+    const saved = localStorage.getItem('rc_candidate_locations');
+    const parsed = saved ? JSON.parse(saved) : [];
+    if (Array.isArray(parsed)) candidates = parsed;
+  } catch (error) {
+    console.warn('No se pudieron leer las ubicaciones candidatas', error);
+  }
+
+  let h =
+    '<div class="station-row">' +
+    '<span class="swatch" style="background:#0A3BB5;"></span>' +
+    '<div class="body">' +
+    '<div class="name">Sitio propuesto (NIJEPRA)</div>' +
+    '<div class="meta">Propuesta · sin frecuencia asignada · ' +
+    proposedStation.power + ' W, ' +
+    proposedStation.gain + ' dBi, torre de ' +
+    proposedStation.height + ' m</div>' +
+    '</div></div>';
+
   mapStations.forEach(st => {
     const loc = hasLoc(st);
-    h += '<div class="station-row"><span class="swatch" style="background:' + colorFor(st.category) + ';"></span><div class="body"><div class="name">' + esc6(st.name) + '</div>' +
-      '<div class="meta">' + (CAT_LABEL[st.category] || '') + ' · ' + esc6(st.freq) + ' MHz · ' + (st.verified ? 'dato verificado' : 'sin verificar') + (loc ? ' · radio ≈ ' + stationRadiusKm(st).toFixed(1) + ' km' : ' · <b style="color:#8A5300;">sin ubicación</b>') + '</div>' +
-      (st.source ? '<div class="meta"><small>Fuente: ' + esc6(st.source) + '</small></div>' : '') + '</div>' +
+    const candidate = candidates.find(c => c.id === st.id);
+
+    let locationText;
+
+    if (loc) {
+      locationText =
+        ' · radio ≈ ' + stationRadiusKm(st).toFixed(1) + ' km';
+    } else if (candidate) {
+      locationText =
+        ' · <b style="color:#1685E8;">ubicación candidata (sin verificar)</b>';
+    } else {
+      locationText =
+        ' · <b style="color:#8A5300;">sin ubicación</b>';
+    }
+
+    h +=
+      '<div class="station-row">' +
+      '<span class="swatch" style="background:' +
+      colorFor(st.category) + ';"></span>' +
+      '<div class="body">' +
+      '<div class="name">' + esc6(st.name) + '</div>' +
+      '<div class="meta">' +
+      (CAT_LABEL[st.category] || '') + ' · ' +
+      esc6(st.freq) + ' MHz · ' +
+      (st.verified ? 'registro oficial' : 'ubicación no verificada') +
+      locationText +
+      '</div>' +
+      (st.source
+        ? '<div class="meta"><small>Fuente: ' +
+          esc6(st.source) + '</small></div>'
+        : '') +
+      '</div>' +
       '<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">' +
-      (loc ? '<button type="button" onclick="focusStation(\'' + esc6(st.id) + '\')">Ver</button>' : '') +
-      (edit ? '<button type="button" onclick="editStation(\'' + esc6(st.id) + '\')">Editar</button><button type="button" onclick="removeStation(\'' + esc6(st.id) + '\')">Quitar</button>' : '') + '</div></div>';
+      (loc
+        ? '<button type="button" onclick="focusStation(\'' +
+          esc6(st.id) + '\')">Ver</button>'
+        : '') +
+      (edit
+        ? '<button type="button" onclick="editStation(\'' +
+          esc6(st.id) + '\')">Editar</button>' +
+          '<button type="button" onclick="removeStation(\'' +
+          esc6(st.id) + '\')">Quitar</button>'
+        : '') +
+      '</div></div>';
   });
+
   wrap.innerHTML = h;
 }
 function focusStation(id){
@@ -1861,11 +2168,51 @@ function parseMinticRows(rows){
   if(hi < 0) return { error: 'No encontré la fila de encabezados (se esperan columnas como municipio, frecuencia y nombre).' };
   const head = rows[hi].map(normTxt), col = {};
   Object.keys(kw).forEach(k => { const j = head.findIndex(c => kw[k].test(c)); if(j >= 0) col[k] = j; });
+ // Seleccionar las columnas correctas del Excel de MinTIC
+const buscarColumna = nombre =>
+  head.findIndex(c => c.replace(/\s+/g, ' ').trim() === nombre);
+
+const columnasExactas = {
+  muni: 'municipio',
+  depto: 'departamento',
+  name: 'nombre emisora',
+  freq: 'frecuencia',
+  cls: 'clase de emisora segun programacion'
+};
+
+Object.entries(columnasExactas).forEach(([clave, nombre]) => {
+  const indice = buscarColumna(nombre);
+  if (indice >= 0) col[clave] = indice;
+});
+  const nombreEmisora = head.findIndex(c =>
+  c.includes('nombre emisora')
+);
+
+if (nombreEmisora >= 0) {
+  col.name = nombreEmisora;
+}
   if(col.muni === undefined) return { error: 'No encontré la columna de municipio.' };
   const out = [];
   rows.slice(hi + 1).forEach(r => {
-    if(normTxt(r[col.muni]) !== 'giron') return;
+    const municipio = normTxt(r[col.muni]);
+
+const municipiosCercanos = [
+  'giron',
+  'bucaramanga',
+  'floridablanca',
+  'piedecuesta'
+];
+
+if (!municipiosCercanos.includes(municipio)) return;
     if(col.depto !== undefined && r[col.depto] && !/santander/.test(normTxt(r[col.depto])) ) return;
+   const columnaTecnologia = head.findIndex(c =>
+  c.includes('tecnologia de transmision')
+);
+
+if (columnaTecnologia >= 0 &&
+    normTxt(r[columnaTecnologia]) !== 'fm') {
+  return;
+}
     const clsTxt = col.cls !== undefined ? normTxt(r[col.cls]) : '';
     const cat = /comunit/.test(clsTxt) ? 'comunitaria' : /interes/.test(clsTxt) ? 'interes' : 'comercial';
     let power = col.pow !== undefined ? parseFloat(String(r[col.pow]).replace(',', '.')) : NaN;
@@ -1888,7 +2235,11 @@ function importMintic(){
       let res = null;
       for(const n of wb.SheetNames){
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '', raw: false });
-        const r = parseMinticRows(rows); if(r.rows){ res = r; break; } res = r;
+        const r = parseMinticRows(rows); if (r.rows && r.rows.length > 0) {
+  res = r;
+  break;
+}
+res = r;
       }
       if(res.error){ setText('imp-status', res.error); return; }
       importCandidates = res.rows.filter(c => c.name);
@@ -2347,8 +2698,8 @@ async function sendChat(){
     chatHistory.push({role:'assistant', content:reply});
   }catch(err){
     typingEl.remove();
-    appendMsg('No pude conectar con el asistente. Si acabas de publicar esta página, revisa que el backend de /api/chat esté desplegado y que la variable ANTHROPIC_API_KEY esté configurada (ver README).', 'bot');
-    console.error(err);
+    appendMsg('No se pudo obtener una respuesta del asistente. El servicio de Gemini puede estar temporalmente ocupado o haber alcanzado su límite de uso. Intenta nuevamente más tarde.', 'bot');
+console.error(err);
   }
 }
 

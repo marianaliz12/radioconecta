@@ -163,6 +163,65 @@ app.put('/api/data', needAuth, (req, res) => {
   writeJson('store.json', store);
   res.json({ ok: true });
 });
+app.post('/api/stations/locate', needAdmin, async (req, res) => {
+  try {
+    if (!process.env.GEOAPIFY_API_KEY) {
+      return res.status(503).json({
+        error: 'Falta configurar GEOAPIFY_API_KEY.'
+      });
+    }
+
+    const results = [];
+
+    for (const station of stations) {
+      if (station.lat != null && station.lng != null) {
+        continue;
+      }
+
+      try {
+        const location = await findRadioLocation(station);
+
+        if (!location) {
+          results.push({
+            name: station.name,
+            status: 'sin_coincidencia'
+          });
+          continue;
+        }
+
+        // No guardar todavía coordenadas no comprobadas.
+        results.push({
+          id: station.id,
+          name: station.name,
+          status: 'candidata',
+          lat: location.lat,
+          lng: location.lng,
+          locationType: 'sede',
+          locationLabel: location.locationLabel,
+          locationSource: location.locationSource
+        });
+
+      } catch (error) {
+        results.push({
+          name: station.name,
+          status: 'error',
+          message: error.message
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      results
+    });
+
+  } catch (error) {
+    console.error('Error buscando emisoras:', error);
+    res.status(500).json({
+      error: 'No se pudo completar la búsqueda.'
+    });
+  }
+});
 
 // ---------- emisoras compartidas del mapa ----------
 function cleanStation(s, i) {
@@ -176,64 +235,160 @@ function cleanStation(s, i) {
     lng: s.lng === null || s.lng === undefined ? null : num(s.lng, -180, 180, null),
     power: num(s.power, 0, 200000, cat === 'comunitaria' ? 250 : 1000),
     height: num(s.height, 0, 500, 30),
-    verified: !!s.verified, source: str(s.source, 120), note: str(s.note, 300)
-  };
+verified: !!s.verified,
+source: str(s.source, 120),
+note: str(s.note, 300),
+
+locationType: ['antena', 'sede', 'pendiente'].includes(s.locationType)
+  ? s.locationType
+  : 'pendiente',
+
+locationSource: str(s.locationSource, 300),
+locationLabel: str(s.locationLabel, 200)  };
 }
 app.get('/api/stations', needAuth, (req, res) => res.json(stations));
+
 app.put('/api/stations', needAdmin, (req, res) => {
   const list = (req.body || {}).stations;
-  if (!Array.isArray(list) || list.length > 500) return res.status(400).json({ error: 'Lista de emisoras no válida.' });
+
+  if (!Array.isArray(list) || list.length > 500) {
+    return res.status(400).json({
+      error: 'Lista de emisoras no válida.'
+    });
+    
+
+  }
+
   stations = list.map(cleanStation).filter(s => s.name);
+
   writeJson('stations.json', stations);
-  res.json({ ok: true, count: stations.length });
-});
 
-// ---------- vista del administrador ----------
-app.get('/api/admin/radios', needAdmin, (req, res) => {
-  const out = Object.keys(users).filter(u => users[u].role === 'solicitante').map(u => ({ user: u, name: users[u].name, data: store[u] || {} }));
-  res.json(out);
-});
-app.delete('/api/admin/users/:u', needAdmin, (req, res) => {
-  const u = String(req.params.u).toLowerCase();
-  if (!users[u] || users[u].role !== 'solicitante') return res.status(404).json({ error: 'No existe ese solicitante.' });
-  if (SEEDS.some(s => s.user === u)) return res.status(400).json({ error: 'La cuenta de prueba se recrea en cada arranque; cambia su clave en las variables de entorno.' });
-  delete users[u]; delete store[u];
-  writeJson('users.json', users); writeJson('store.json', store);
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    count: stations.length
+  });
 });
 
 
- // ---------- asistente educativo con Google Gemini ----------
+function normalizeRadioName(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(emisora|radio|fm|estereo|stereo|comunitaria)\b/g, ' ')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchesRadioName(stationName, placeName) {
+  const words = normalizeRadioName(stationName)
+    .split(' ')
+    .filter(word => word.length >= 4);
+
+  const place = normalizeRadioName(placeName);
+
+  // Exigir al menos dos palabras distintivas.
+  if (words.length < 2) return false;
+
+  return words.filter(word =>
+    place.split(' ').includes(word)
+  ).length >= 2;
+}
+
+
+async function findRadioLocation(station) {
+  const apiKey = process.env.GEOAPIFY_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('Falta configurar GEOAPIFY_API_KEY');
+  }
+
+  const url = new URL(
+    'https://api.geoapify.com/v1/geocode/search'
+  );
+
+  url.searchParams.set(
+    'text',
+    `${station.name}, Santander, Colombia`
+  );
+  url.searchParams.set('filter', 'countrycode:co');
+  url.searchParams.set('bias', 'proximity:-73.169562,7.068899');
+  url.searchParams.set('format', 'json');
+url.searchParams.set('limit', '20');  
+  url.searchParams.set('apiKey', apiKey);
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(10000)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Geoapify respondió ${response.status}`);
+  }
+
+  const data = await response.json();
+  const results = Array.isArray(data.results)
+    ? data.results
+    : [];
+
+  const match = results.find(place => {
+    const name = String(place.name || '');
+    const lat = Number(place.lat);
+    const lng = Number(place.lon);
+
+    return (
+      matchesRadioName(station.name, name) &&
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      lat >= 6.7 && lat <= 7.3 &&
+      lng >= -73.5 && lng <= -72.9 &&
+      !['city', 'county', 'state', 'country'].includes(
+        place.result_type
+      )
+    );
+  });
+
+  if (!match) return null;
+
+  return {
+    lat: Number(match.lat),
+    lng: Number(match.lon),
+    locationType: 'sede',
+    locationLabel: String(match.formatted || match.name || ''),
+    locationSource: 'Geoapify / OpenStreetMap'
+  };
+}
+
+// ---------- Chatbot con Gemini ----------
 const chatHits = new Map();
 
 app.post('/api/chat', needAuth, async (req, res) => {
   try {
-    const messages = (req.body || {}).messages;
-
-    if (!Array.isArray(messages) || !messages.length) {
-      return res.status(400).json({
-        error: 'Falta el historial de mensajes.'
-      });
-    }
-
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      return res.status(500).json({
-        error: 'Falta configurar GEMINI_API_KEY en Render.'
+      return res.status(503).json({
+        error: 'La clave de Gemini no está configurada.'
+      });
+    }
+
+    const messages = req.body?.messages;
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({
+        error: 'Debes enviar al menos un mensaje.'
       });
     }
 
     const now = Date.now();
     const hits = (chatHits.get(req.session.user) || [])
-      .filter(t => now - t < 3600000);
+      .filter(time => now - time < 60000);
 
-    if (hits.length >= 60) {
+    if (hits.length >= 10) {
       return res.status(429).json({
-        error: 'Límite de 60 mensajes por hora alcanzado.'
+        error: 'Demasiadas solicitudes. Espera un minuto.'
       });
     }
-
     hits.push(now);
     chatHits.set(req.session.user, hits);
 
@@ -244,32 +399,73 @@ app.post('/api/chat', needAuth, async (req, res) => {
       }]
     }));
 
-    const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
-      {
+      const geminiUrl =
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent';
+  
+    const requestBody = {
+      systemInstruction: {
+        parts: [{ text: SYSTEM_PROMPT }]
+      },
+      contents: trimmed,
+      generationConfig: {
+        maxOutputTokens: 1500,
+        temperature: 0.4
+      }
+    };
+
+    let response;
+
+    for (let intento = 1; intento <= 3; intento++) {
+      response = await fetch(geminiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey
         },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: SYSTEM_PROMPT }]
-          },
-          contents: trimmed,
-          generationConfig: {
-            maxOutputTokens: 1500,
-            temperature: 0.4
-          }
-        })
-      }
-    );
+        body: JSON.stringify(requestBody)
+      });
 
-    if (!response.ok) {
+      if (response.ok) {
+        break;
+      }
+
+      // No repetir solicitudes cuando se agota la cuota de Gemini
+if (response.status === 429) {
+  break;
+}
+
+// Reintentar únicamente errores temporales del servidor
+if (![500, 502, 503, 504].includes(response.status)) {
+  break;
+}
+
+      if (intento < 3) {
+        console.log(
+          `Gemini ocupado (${response.status}). Reintento ${intento} de 2.`
+        );
+
+        await new Promise(resolve =>
+          setTimeout(resolve, intento * 2000)
+        );
+      }
+    }
+
+        if (!response.ok) {
       console.error('Gemini:', response.status, await response.text());
 
+      if (response.status === 429) {
+  return res.status(429).json({
+    error: 'Se alcanzó el límite de uso de Gemini. Intenta nuevamente cuando se restablezca la cuota.'
+  });
+}
+      if (response.status === 503) {
+        return res.status(503).json({
+          error: 'El asistente está temporalmente ocupado. Intenta nuevamente en unos minutos.'
+        });
+      }
+
       return res.status(502).json({
-        error: 'No se pudo obtener respuesta de Gemini. Revisa los registros del servidor.'
+        error: 'No se pudo obtener respuesta de Gemini. Intenta nuevamente más tarde.'
       });
     }
 
